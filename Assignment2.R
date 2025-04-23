@@ -1,12 +1,12 @@
 library(plyr)
 library(dplyr)
-library(stringr)
 library(ggplot2)
 library(lubridate)
 library(randomForest)
+library(mice)
 
 # Data import
-fileUrl = "C:\\Users\\User\\OneDrive\\Desktop\\Degree\\PDA\\Assignment\\retail_data.csv"
+fileUrl = "retail_data.csv"
 dataset = read.csv(fileUrl)
 dataset
 
@@ -61,7 +61,7 @@ dataset <- dataset[!is.na(dataset$date_time), ]
 sum(is.na(dataset$date_time))
 
 # Drop Name, Email, Phone, Address, City, State, ZipCode, Country
-dataset <- dataset %>% select(-name, -email, -phone, -address, -city, -state, -zipcode, -country)
+dataset <- dataset %>% select(-name, -email, -phone, -address, -city, -state, -zipcode, -country, -transaction_id, -customer_id)
 
 summary(dataset)
 View(dataset)
@@ -72,82 +72,45 @@ print("Final NA counts:")
 print(final_na_counts)
 
 # Check data types of all columns
-print("Final column types:")
-print(sapply(dataset, class))
+#print("Final column types:")
+#print(sapply(dataset, class))
 
+# 1. Identify rows with missing values
+rows_with_na <- which(rowSums(is.na(dataset)) > 0)
+dataset_complete <- dataset[-rows_with_na, ]
+dataset_na <- dataset[rows_with_na, ]
 
+cat("Number of rows with missing values:", nrow(dataset_na), "\n")
+cat("Number of rows without missing values:", nrow(dataset_complete), "\n")
 
-# 1. Age plot before prediction
-dataset %>%
-  mutate(age_group = ifelse(is.na(age), "Missing", 
-                            as.character(cut(age, breaks = seq(0, 100, by = 5))))) %>%
-  ggplot(aes(x = age_group)) +
-  geom_bar(fill = "tomato", color = "white") +
-  theme_minimal() +
-  labs(title = "Age Distribution (Before Prediction, Including Missing Values)",
-       x = "Age Group", y = "Count of Rows") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+if (nrow(dataset_na) > 0) {
+  # 2. Identify columns with missing values in the subset with NAs
+  missing_cols_na <- names(dataset_na)[colSums(is.na(dataset_na)) > 0]
+  cat("Columns with missing values in the NA subset:", missing_cols_na, "\n")
+  
+  # 3. Perform MICE imputation ONLY on the subset with missing values
+  # Be mindful of the predictors available in 'dataset_na'.
+  # MICE needs non-NA values in the predictor columns to perform imputation.
+  imputed_data_na <- mice(dataset_na, m = 5, maxit = 50, seed = 123)
+  
+  # 4. Get the completed subset
+  dataset_na_mice <- complete(imputed_data_na, 1)
+  
+  # 5. Verify that there are no more missing values in the imputed subset
+  cat("\n📊 Summary of missing values after MICE imputation on NA subset:\n")
+  print(colSums(is.na(dataset_na_mice)))
+  
+  # 6. Add the imputed rows back to the complete dataset
+  dataset_mice <- rbind(dataset_complete, dataset_na_mice)
+  
+  # Optional: Sort the combined dataset back to the original order if needed
+  # dataset_mice <- dataset_mice[order(as.numeric(rownames(dataset))), ]
+} else {
+  # If there were no rows with missing values
+  dataset_mice <- dataset_complete
+  cat("\nNo rows with missing values found. Skipping MICE.\n")
+}
 
-# 2. Prepare dataset
-dataset_cleaned <- dataset %>%
-  mutate(
-    gender = ifelse(is.na(gender), "Unknown", gender),
-    income = ifelse(is.na(income), "Unknown", income),
-    customer_segment = ifelse(is.na(customer_segment), 
-                              "Unknown", customer_segment),
-    total_purchases = ifelse(is.na(total_purchases), 
-                             median(total_purchases, na.rm = TRUE), 
-                             total_purchases)
-  ) %>%
-  mutate(across(c(gender, income, customer_segment), as.factor))
-
-# 3. Select only relevant columns
-age_vars <- dataset_cleaned %>%
-  select(age, gender, income, customer_segment, total_purchases)
-
-# 4. Split data
-train_age <- age_vars %>% filter(!is.na(age))
-test_age <- age_vars %>% filter(is.na(age))
-
-# 5. Train random forest
-rf_model <- randomForest(age ~ ., data = train_age)
-
-# 6. Predict
-predicted_ages <- predict(rf_model, newdata = test_age)
-
-# 7. Replace missing values in the original dataset
-dataset_cleaned$age[is.na(dataset_cleaned$age)] <- predicted_ages
-
-# 8. Age plot after prediction
-dataset_cleaned %>%
-  mutate(age_group = cut(age, breaks = seq(0, 100, by = 5), right = FALSE)) %>%
-  ggplot(aes(x = age_group)) +
-  geom_bar(fill = "skyblue", color = "white") +
-  theme_minimal() +
-  labs(title = "Age Group Distribution (After Prediction)", 
-       x = "Age Group", 
-       y = "Count of Rows") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-
-# Calculate the missing data distribution
-before_dist <- dataset %>%
-  mutate(age_group = ifelse(is.na(age), "Missing", as.character(cut(age, breaks = seq(0, 100, by = 5))))) %>%
-  count(age_group)
-
-# Assign the predicted values to the missing data (NA rows)
-dataset_cleaned <- dataset
-dataset_cleaned$age[is.na(dataset$age)] <- predicted_ages
-
-# Calculate the new age group distribution after imputation
-after_dist <- dataset_cleaned %>%
-  mutate(age_group = cut(age, breaks = seq(0, 100, by = 5), right = FALSE)) %>%
-  count(age_group)
-
-# View before and after distributions to ensure the count hasn't exceeded 172
-before_dist
-after_dist
-
-# Make sure the sum of the newly imputed values equals 172
-sum(after_dist$n) - sum(before_dist$n)
-
+# 7. Final check for missing values in the entire dataset
+cat("\n📊 Summary of missing values in the final dataset after potential MICE:\n")
+print(colSums(is.na(dataset_mice)))
