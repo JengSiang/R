@@ -3,6 +3,8 @@ library(dplyr)
 library(stringr)
 library(ggplot2)
 library(lubridate)
+library(VIM)
+library(mice)
 library(randomForest)
 
 # Data import
@@ -61,7 +63,7 @@ dataset <- dataset[!is.na(dataset$date_time), ]
 sum(is.na(dataset$date_time))
 
 # Drop Name, Email, Phone, Address, City, State, ZipCode, Country
-dataset <- dataset %>% select(-name, -email, -phone, -address, -city, -state, -zipcode, -country)
+dataset <- dataset %>% select(-name, -email, -phone, -address, -city, -state, -zipcode, -country, -transaction_id, -customer_id)
 
 summary(dataset)
 View(dataset)
@@ -76,78 +78,92 @@ print("Final column types:")
 print(sapply(dataset, class))
 
 
-
-# 1. Age plot before prediction
-dataset %>%
-  mutate(age_group = ifelse(is.na(age), "Missing", 
-                            as.character(cut(age, breaks = seq(0, 100, by = 5))))) %>%
-  ggplot(aes(x = age_group)) +
-  geom_bar(fill = "tomato", color = "white") +
-  theme_minimal() +
-  labs(title = "Age Distribution (Before Prediction, Including Missing Values)",
-       x = "Age Group", y = "Count of Rows") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# 2. Prepare dataset
-dataset_cleaned <- dataset %>%
-  mutate(
-    gender = ifelse(is.na(gender), "Unknown", gender),
-    income = ifelse(is.na(income), "Unknown", income),
-    customer_segment = ifelse(is.na(customer_segment), 
-                              "Unknown", customer_segment),
-    total_purchases = ifelse(is.na(total_purchases), 
-                             median(total_purchases, na.rm = TRUE), 
-                             total_purchases)
-  ) %>%
-  mutate(across(c(gender, income, customer_segment), as.factor))
-
-# 3. Select only relevant columns
-age_vars <- dataset_cleaned %>%
-  select(age, gender, income, customer_segment, total_purchases)
-
-# 4. Split data
-train_age <- age_vars %>% filter(!is.na(age))
-test_age <- age_vars %>% filter(is.na(age))
-
-# 5. Train random forest
-rf_model <- randomForest(age ~ ., data = train_age)
-
-# 6. Predict
-predicted_ages <- predict(rf_model, newdata = test_age)
-
-# 7. Replace missing values in the original dataset
-dataset_cleaned$age[is.na(dataset_cleaned$age)] <- predicted_ages
-
-# 8. Age plot after prediction
-dataset_cleaned %>%
-  mutate(age_group = cut(age, breaks = seq(0, 100, by = 5), right = FALSE)) %>%
-  ggplot(aes(x = age_group)) +
-  geom_bar(fill = "skyblue", color = "white") +
-  theme_minimal() +
-  labs(title = "Age Group Distribution (After Prediction)", 
-       x = "Age Group", 
-       y = "Count of Rows") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Store subset of data
+data_income_subset <- subset(dataset, is.na(dataset$income))
+data_gender_subset <- subset(dataset, is.na(dataset$gender))
+data_customer_segment_subset <- subset(dataset, is.na(dataset$customer_segment))
+data_shipping_method_subset <- subset(dataset, is.na(dataset$shipping_method))
+data_payment_method_subset <- subset(dataset, is.na(dataset$payment_method))
 
 
-# Calculate the missing data distribution
-before_dist <- dataset %>%
-  mutate(age_group = ifelse(is.na(age), "Missing", as.character(cut(age, breaks = seq(0, 100, by = 5))))) %>%
-  count(age_group)
 
-# Assign the predicted values to the missing data (NA rows)
-dataset_cleaned <- dataset
-dataset_cleaned$age[is.na(dataset$age)] <- predicted_ages
+md.pattern(dataset)
 
-# Calculate the new age group distribution after imputation
-after_dist <- dataset_cleaned %>%
-  mutate(age_group = cut(age, breaks = seq(0, 100, by = 5), right = FALSE)) %>%
-  count(age_group)
+aggr_plot <-aggr(dataset, col=c('navyblue','red'),
+                 numbers = TRUE,
+                 sortVars = TRUE,
+                 labels = names(data),
+                 cex.axis = .7,
+                 gap = 3,
+                 ylab = c("Histogram of Missing Data","Pattern"))
 
-# View before and after distributions to ensure the count hasn't exceeded 172
-before_dist
-after_dist
+dataset <- as.data.frame(dataset)
+dataset[] <- lapply(dataset, function(x) {
+  if (is.character(x)) as.factor(x) else x
+})
 
-# Make sure the sum of the newly imputed values equals 172
-sum(after_dist$n) - sum(before_dist$n)
+method_vec <- make.method(dataset)
 
+method_vec[] <- ""
+method_vec[c("gender", "income", "customer_segment", "payment_method", "shipping_method")] <- "rf"
+
+pred_matrix <- make.predictorMatrix(dataset)
+
+vars_to_impute <- c("gender", "income", "customer_segment", "payment_method", "shipping_method")
+pred_matrix[,] <- 0
+
+for (var in vars_to_impute) {
+  pred_matrix[var, setdiff(vars_to_impute, var)] <- 1
+}
+
+set.seed(1)
+imputed_data <- mice(dataset, m = 5, method = method_vec, predictorMatrix = pred_matrix)
+summary(imputed_data)
+completed_data <- complete(imputed_data)
+sapply(completed_data[vars_to_impute], function(x) sum(is.na(x)))
+
+
+# Gender Distribution
+ggplot(completed_data, aes(x = gender)) +
+  geom_bar() +
+  labs(title = "Distribution of Gender", x = "Gender", y = "Count")
+
+# Income Distribution
+ggplot(completed_data, aes(x = income)) +
+  geom_bar() +
+  labs(title = "Distribution of Income", x = "Income", y = "Count")
+
+# Customer Segment Distribution
+ggplot(completed_data, aes(x = customer_segment)) +
+  geom_bar() +
+  labs(title = "Distribution of Customer Segment", x = "Customer Segment", y = "Count")
+
+# Contingency Table between Gender and Income
+table_gender_income <- table(completed_data$gender, completed_data$income)
+
+# Logistic regression between Gender and Income
+model <- glm(gender ~ income + shipping_method + payment_method, data = completed_data, family = "binomial")
+
+
+method_vec <- make.method(dataset)
+
+method_vec[] <- ""
+method_vec[c("ratings", "feedback")] <- "rf"
+
+pred_matrix <- make.predictorMatrix(dataset)
+
+vars_to_impute <- c("ratings", "feedback")
+pred_matrix[,] <- 0
+
+for (var in vars_to_impute) {
+  pred_matrix[var, setdiff(vars_to_impute, var)] <- 1
+}
+
+set.seed(2)
+imputed_data <- mice(completed_data, m = 5, method = method_vec, predictorMatrix = pred_matrix)
+summary(imputed_data)
+completed_data1 <- complete(imputed_data)
+sapply(completed_data1[vars_to_impute], function(x) sum(is.na(x)))
+
+vars_to_impute_all <- c("gender", "income", "customer_segment", "payment_method", "shipping_method", "ratings", "feedback")
+sapply(completed_data1[vars_to_impute_all], function(x) sum(is.na(x)))
