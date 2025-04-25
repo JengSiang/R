@@ -5,7 +5,7 @@ library(lubridate)
 library(mice)
 
 # Data import
-fileUrl = "C:\\Users\\User\\OneDrive\\Desktop\\Degree\\PDA\\Assignment\\retail_data.csv"
+fileUrl = "retail_data.csv"
 dataset = read.csv(fileUrl)
 dataset
 
@@ -238,3 +238,25 @@ if (length(na_cols) == 0) {
     print("No corresponding rows to view in the complete datasets.")
   }
 }
+
+# Determine the final processed dataset to save
+# If mice imputation was performed, complete_dataset_1 holds the result.
+# Otherwise, the 'dataset' variable holds the cleaned data.
+if (exists("complete_dataset_1")) {
+  final_dataset_to_save <- complete_dataset_1
+  print("Using the first complete dataset from mice for saving.")
+} else {
+  final_dataset_to_save <- dataset # Use the dataset as is after manual cleaning/imputation
+  print("No missing values required mice imputation. Using the cleaned dataset for saving.")
+}
+
+# Define the output file path
+# You can change the file name and path as needed
+output_file_path <- "cleaned_retail_data.csv"
+
+# Save the cleaned and processed data to a new CSV file
+# row.names = FALSE prevents R from writing the row numbers as a column in the CSV
+write.csv(final_dataset_to_save, output_file_path, row.names = FALSE)
+
+# Print a message to confirm the file was saved
+print(paste("Cleaned and processed data saved successfully to:", output_file_path))
